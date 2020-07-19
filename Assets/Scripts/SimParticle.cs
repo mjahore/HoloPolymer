@@ -1,4 +1,11 @@
-﻿using System.Collections;
+﻿/*
+ * SimParticle.cs - This class adds simulation functionality to a Monomer prefab.
+ *
+ * Mike Hore (hore@case.edu), Case Western Reserve University
+ * July 2020
+ *
+ */
+using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Diagnostics;
@@ -45,12 +52,11 @@ public class SimParticle : MonoBehaviour
         this.prevNetForce.Set(0.0f, 0.0f, 0.0f);
     }
 
-
+    // Adds a force vector to this particle's net force.   
     public void AddForce(Vector3 myForce)
     {
         this.beadNetForce += myForce;
     }
-
 
     // Correct the velocity based on current force values.
     public void CorrectVelocity()
@@ -58,6 +64,8 @@ public class SimParticle : MonoBehaviour
         this.beadVelocity = this.prevVelocity + 0.5f * dt * (this.beadNetForce + this.prevNetForce);
     }
 
+    // This applies the Langevin thermostat, and initializes the net force vector before the
+    // forces are calculated.
     public void Langevin(float sigma, float gamma)
     {
         // Store current velocity/net force.
@@ -67,7 +75,6 @@ public class SimParticle : MonoBehaviour
         // Reset current net force.
         Vector3 randF = new Vector3(Random.Range(-0.5f, 0.5f), Random.Range(-0.5f, 0.5f), Random.Range(-0.5f, 0.5f));
         this.beadNetForce = (2.0f * sigma * randF - gamma * this.beadVelocity);
-
     }
 
 
@@ -79,7 +86,7 @@ public class SimParticle : MonoBehaviour
         Vector3 dr = (dt * beadVelocity) + (0.5f * dt * dt * beadNetForce);
         this.realPosition = this.realPosition + dr;
 
-        // For display.
+        // For display -- we gotta rescale!
         this.transform.localPosition = this.realPosition * scaleFactor;
 
     }
@@ -94,7 +101,7 @@ public class SimParticle : MonoBehaviour
         this.initialPosition = myPosition;
     }
 
-
+    // Reset puts everything back to where it was when the simulation was started.
     public void Reset(float scaleFactor)
     {
         // Re-initialize

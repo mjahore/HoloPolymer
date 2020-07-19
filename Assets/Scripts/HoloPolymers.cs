@@ -1,4 +1,17 @@
-﻿using System.Collections;
+﻿/*
+ * HoloPolymers.cs - An implementation of an implicit solvent simulation of a single polymer chain
+ *                   in Unity. The model used here is due to M. Laradji et al. and can be found in 
+ *                   the following publication:
+ *
+ *                   J.D. Revalee, M. Laradji, and P. B. S. Kumar, J. Chem. Phys. 2008, 128, 01B614.
+ *
+ *                   The thermostat is a Langevin thermostat.
+ *
+ * Mike Hore (hore@case.edu), Case Western Reserve University
+ * July 2020
+ *
+ */
+using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using UnityEngine;
@@ -6,9 +19,9 @@ using UnityEngine;
 public class HoloPolymers : MonoBehaviour
 {
     // Configuration
-    public float boxSize = 30.0f;
-    public int polyLen = 20;
-    public float initVel = 1.0f;
+    public float boxSize = 50.0f;
+    public int polyLen = 50;
+    public float initVel = 1.5f;
     public bool showBondVectors = true;
     public bool showRgSphere = true;
     public bool showRhSphere = true;
@@ -22,11 +35,11 @@ public class HoloPolymers : MonoBehaviour
     public GameObject bondVector;
 
     // Interaction parameters
-    public float bondLength = 0.7f;
+    public float bondLength = 1.5f;
     public float Rc = 2.0f;
     public float Rm = 1.0f;
     public float bondStrength = 100.0f;
-    public float bendStrength = 100.0f;
+    public float bendStrength = 50.0f;
     public float U_MAX = 200.0f;
     public float U_MIN = -5.0f;
 
@@ -39,17 +52,22 @@ public class HoloPolymers : MonoBehaviour
     // Private globals
     private GameObject[] simulationParticles;
     private GameObject[] bondVectors;
-
-    // Private data
     private float scaleFactor;
     private float avgBondLength;
     private float avgBondAngle;
-    private float RhConversion = 1.0f / 0.774f;
+    private float RhConversion = 1.2919896f; // = 1.0/0.774
+    private int MAX_MONOMERS = 100;
     private GameObject VisualRg;
     private GameObject VisualRh;
     
+    ////
     // These are some public routines to allow the user to change the
     // appearance on the fly.
+    ////
+
+    //
+    // ResetSim() - Returns all monomers to their initial positions/velocities.
+    //
     public void ResetSim()
     {
         for (int i=0; i<polyLen; i++)
@@ -59,6 +77,11 @@ public class HoloPolymers : MonoBehaviour
     }
 
 
+    //
+    // ToggleAngles() - Toggles between the freely jointed chain (FJC) model, where any bond angle is 
+    //                  permitted, and the freely rotating chain (FRC) model, where a fixed bond angle
+    //                  is enforced through a bending potential. By default, this angle is 68 deg. in
+    //                  this code (hard coded below). 
     public void ToggleAngles()
     {
         if (fixedBondAngles)
@@ -71,6 +94,10 @@ public class HoloPolymers : MonoBehaviour
         }
     }
 
+
+    //
+    // ToggleBondVectors() - Toggles between displaying and not displaying the bonds between monomers.
+    //
     public void ToggleBondVectors()
     {
         if (showBondVectors)
@@ -93,6 +120,10 @@ public class HoloPolymers : MonoBehaviour
     }
 
 
+    //
+    // ToggleRh() - Toggles between displaying and not displaying a sphere representing the
+    //              hydrodynamic radius of the polymer chain.
+    //
     public void ToggleRh()
     {
         if (showRhSphere)
@@ -105,6 +136,11 @@ public class HoloPolymers : MonoBehaviour
         }
     }
 
+
+    //
+    // ToggleRg() - Toggles between displaying and not displaying a sphere representing the
+    //              radius of gyration of the polymer chain.
+    //
     public void ToggleRg()
     {
         if (showRgSphere)
@@ -117,6 +153,13 @@ public class HoloPolymers : MonoBehaviour
         }
     }
 
+
+    //
+    // ToggleSpeed() - If the timestep dt is too large, the simulation will blow up. This is
+    //                 especially true when the FRC model is used. ToggleSpeed() switches between
+    //                 a timestep of dt, or 10*dt. In the FRJ chain model, using the default parameters,
+    //                 a timestep of up to dt = 0.01 is usually stable.
+    //
     public void ToggleSpeed()
     {
         if (equilibrate)
@@ -130,7 +173,12 @@ public class HoloPolymers : MonoBehaviour
     }
 
 
-    // Start is called before the first frame update
+    //
+    // Start() - This method is called first, and sets up the simulation. Notice thaat the lengthscales here are
+    //           rescaled by scaleFactor when the particles need to be displayed to the user. Thus,they're really
+    //           tied to the size of the BoundingBox around the object "BaseParticle", which is the only object
+    //           placed in the scene (other than camera, light, and context menu).
+    //
     void Start()
     {
 
@@ -141,14 +189,17 @@ public class HoloPolymers : MonoBehaviour
         float systemVolume = boxSize * boxSize * boxSize;
         sigma = Mathf.Sqrt(6.0f * gamma * temperature / dt);
 
-        // Objects for the scene
-        simulationParticles = new GameObject[polyLen];
+        // Objects for the scene. Notice that we allow for a polymer chain having
+        // up to MAX_MONOMERS monomers. The number of monomers can be changed on the fly
+        // by the user by rescaling the BoundingBox around "BaseParticle".
+        simulationParticles = new GameObject[MAX_MONOMERS];
         bondVectors = new GameObject[polyLen - 1];
 
-        // Set up the polymer chain.
+        // Set up the polymer chain, by either anchoring the first monomer to the position of
+        // the BaseParticle, or by randomly placing a monomer near the previous monomer in the
+        // chain.
         for (int i = 0; i < polyLen; i++)
         {
-
             Vector3 initialPosition;
             if (i == 0)
             {
@@ -156,8 +207,7 @@ public class HoloPolymers : MonoBehaviour
             }
             else
             {
-                //initialPosition = new Vector3(Random.Range(-1, 1), Random.Range(-1, 1), Random.Range(-1, 1));
-                initialPosition = new Vector3(1, 0, 0);
+                initialPosition = new Vector3(Random.Range(-1, 1), Random.Range(-1, 1), Random.Range(-1, 1));
                 initialPosition = simulationParticles[i - 1].GetComponent<SimParticle>().realPosition + bondLength * initialPosition.normalized;
             }
 
@@ -185,7 +235,7 @@ public class HoloPolymers : MonoBehaviour
             simulationParticles[i].transform.localScale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
         }
 
-        // Move the center-of-mass to <0, 0, 0>:
+        // Move the center-of-mass to <0, 0, 0> to center the chain in the BoundingBox.
         CenterOfMass();
 
         // Calculate initial forces.
@@ -203,14 +253,20 @@ public class HoloPolymers : MonoBehaviour
 
     }
 
-    // Note that we use FixedUpdate(), which is framerate independent. This is necessary 
-    // to get the correct physics. Default is this is called 50 times per second, so we 
-    // can assign a dt of 0.1. This is needed for the random force in DPD.
+
+    //
+    // Update() - This is the main loop of the simulation that updates the positions/velocities of the 
+    //            monomers using the values of the forces that are calculated. Integration is done using
+    //            the velocity-Verlet (VV) algorithm.
+    //
     void Update()
     {
-        // Check for equilibrate flag to speed up
+
+	// This is the first step of the VV algorithm where we move the particles, predict a value
+        // for the velocity, and apply the Langevin thermostat.
         for (int i = 0; i < polyLen; i++)
         {
+            // Check for equilibrate flag to speed up
             if (equilibrate)
             {
                 simulationParticles[i].GetComponent<SimParticle>().SetDt(10*dt);
@@ -226,8 +282,10 @@ public class HoloPolymers : MonoBehaviour
         // Keep the polymer centered in the scene.
         CenterOfMass();
 
+        // This updates the bond vectors between monomers.
         if (showBondVectors) UpdateBonds();
 
+        // This just shows (or doesn't) a sphere representing Rg.
         if (showRgSphere)
         {
             UpdateRgSphere();
@@ -237,6 +295,7 @@ public class HoloPolymers : MonoBehaviour
             Destroy(VisualRg);
         }
 
+        // This is the same, but for Rh.
         if (showRhSphere)
         {
             UpdateRhSphere();
@@ -246,7 +305,8 @@ public class HoloPolymers : MonoBehaviour
             Destroy(VisualRh);
         }
 
-
+        // Recalculate the new values for the force on each bead using the new
+        // position of the particles.
         FENEBonds();
         if (fixedBondAngles) BondAngles();
         Interparticle_Forces();
@@ -259,6 +319,11 @@ public class HoloPolymers : MonoBehaviour
 
     }
 
+
+    // 
+    // UpdateBonds() - This updates the position of the bonds between monomers. A bond vector is just represented by
+    //                 a cylinder prefab. As with positions, everything is scaled by scaleFactor.
+    //
     void UpdateBonds()
     {
         for (int i = 0; i < polyLen - 1; i++)
@@ -273,6 +338,10 @@ public class HoloPolymers : MonoBehaviour
     }
 
 
+    //
+    // UpdateRgSphere() - As the polymer chain's conformation evolves, its radius of gyration changes. This
+    //                    updates the size of the Rg sphere as Rg changes.
+    //
     void UpdateRgSphere()
     {
         if (!VisualRg) VisualRg = Instantiate(rgSphere);
@@ -282,15 +351,26 @@ public class HoloPolymers : MonoBehaviour
     }
 
 
+    //
+    // UpdateRgSphere() - As the polymer chain's conformation evolves, its hydrodynamic radius changes. This
+    //                    updates the size of the Rh sphere as Rh changes.
+    //
     void UpdateRhSphere()
     {
         if (!VisualRh) VisualRh = Instantiate(rhSphere);
+
+	// Note how we calculate Rh. We are assuming that Rg/Rh = 0.774.
         float Rg = RadiusOfGyration();
         VisualRh.transform.localScale = new Vector3(Rg, Rg, Rg) * RhConversion;
+
         VisualRh.transform.localPosition = GameObject.Find("BaseParticle").transform.position;
     }
 
 
+    //
+    // DrawBonds() - This method actually creates the bond vectors between monomers, and sets them to their
+    //               initial positions & orientations.
+    //
     void DrawBonds()
     {
         for (int i = 0; i < polyLen - 1; i++)
@@ -302,20 +382,24 @@ public class HoloPolymers : MonoBehaviour
             bondVectors[i].transform.up = offset;
             bondVectors[i].transform.localScale = scale;
         }
-
     }
 
 
+    // 
+    // DrawRgSphere() - This is a lot like UpdateRgSphere, except that it creates the RgSphere object.
+    //
     void DrawRgSphere()
     {
         VisualRg = Instantiate(rgSphere);
         VisualRg.transform.localPosition = GameObject.Find("BaseParticle").transform.position;
         float Rg = RadiusOfGyration();
         VisualRg.transform.localScale = new Vector3(Rg, Rg, Rg);
-
     }
 
-
+   
+    // 
+    // DrawRhSphere() - This is a lot like UpdateRhSphere, except that it creates the RhSphere object.
+    //
     void DrawRhSphere()
     {
         if (!VisualRh) VisualRh = Instantiate(rhSphere);
@@ -331,6 +415,10 @@ public class HoloPolymers : MonoBehaviour
      ***********************************************************************/
 
 
+    //
+    // BondAngles() - This applies a potential U = -k * (cos(theta) - cos(theta0))^2 to each
+    //                monomer. It's just a derivative and a lot of dot products. If you don't
+    //                understand the math, e-mail me.
     void BondAngles()
     {
         UnityEngine.Vector3 dr0, dr1;
@@ -339,7 +427,7 @@ public class HoloPolymers : MonoBehaviour
         float cos_theta;
         UnityEngine.Vector3 f_total;
         float f_coefficient;
-        float theta0 = 1.186823891f; // 68 degrees.
+        float theta0 = 1.186823891f; // 68 degrees in radians.
 
         avgBondAngle = 0.0f;
         for (int i = 0; i < polyLen - 2; i++)
@@ -376,8 +464,12 @@ public class HoloPolymers : MonoBehaviour
         avgBondAngle = Mathf.Acos(avgBondAngle) * (180.0f/3.14159f);
     }
 
-
-
+ 
+    //
+    // FENEBonds() - This applies the FENE potential to each monomer. The FENE potential is a steeper
+    //               bonding potential than the harmonic potential, so it enforces the bond lengths better
+    //               in my experience.
+    //
     void FENEBonds()
     {
         float max_bond2 = Mathf.Pow(3*bondLength, 2);
@@ -387,7 +479,7 @@ public class HoloPolymers : MonoBehaviour
         for (int i = 0; i < polyLen - 1; i++)
         {
 
-            // Harmonic force = -x(r_i - r_j);
+            // FENE force = -grad(FENE potential)
             Vector3 bondVector = simulationParticles[i].GetComponent<SimParticle>().realPosition - simulationParticles[i + 1].GetComponent<SimParticle>().realPosition;
             float harmonicForce = -bondStrength / (1.0f - Mathf.Pow(bondVector.magnitude - bondLength, 2) / max_bond2) * (bondVector.magnitude - bondLength);
 
@@ -407,6 +499,10 @@ public class HoloPolymers : MonoBehaviour
     }
 
 
+    //
+    // HarmonicBonds() - This is another bonding approach, but uses a harmonic potential instead. It's here,
+    //                   but I don't recommend using it unless you have a good reason.
+    //
     void HarmonicBonds()
     {
         avgBondLength = 0.0f;
@@ -434,6 +530,12 @@ public class HoloPolymers : MonoBehaviour
 
     }
 
+
+    //
+    // InterParticle_Forces() - This calculates the forces between all beads according to the model from Laradji.
+    //                          Note that I am just brute forcing this. If you had more particles, it would be
+    //                          ridiculously slow to do this double loop. You should use a neighbor list instead.
+    //
     void Interparticle_Forces()
     {
         int i, j;
@@ -477,12 +579,11 @@ public class HoloPolymers : MonoBehaviour
     }
 
 
-
-    /*
-     * CenterOfMass() - Returns the center of mass of the polymer chain, and also
-     *                  translates the polymer chain to the center of the simulation
-     *                  container object. This helps us with moving the hologram.
-     */
+    //
+    // CenterOfMass() - Returns the center of mass of the polymer chain, and also
+    //                  translates the polymer chain to the center of the simulation
+    //                  container object. This helps us with moving the hologram.
+    //
     Vector3 CenterOfMass()
     {
         Vector3 com = new Vector3(0, 0, 0);
@@ -506,6 +607,10 @@ public class HoloPolymers : MonoBehaviour
         return com;
     }
 
+
+    //
+    // RadiusOfGyration() - Calculates Rg for the chain.
+    //
     float RadiusOfGyration()
     {
         int i, j;
@@ -527,8 +632,5 @@ public class HoloPolymers : MonoBehaviour
 
         return Rg;
     }
-
-
-
 
 }
