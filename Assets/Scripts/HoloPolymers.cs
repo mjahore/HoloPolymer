@@ -35,7 +35,7 @@ public class HoloPolymers : MonoBehaviour
 {
     // Configuration
     public float boxSize = 50.0f;
-    public int polyLen = 50;
+    public int initialPolyLen = 50;
     public float initVel = 1.5f;
     public bool showBondVectors = true;
     public bool showRgSphere = true;
@@ -70,8 +70,10 @@ public class HoloPolymers : MonoBehaviour
     private float scaleFactor;
     private float avgBondLength;
     private float avgBondAngle;
+    private int   polyLen;
     private float RhConversion = 1.2919896f; // = 1.0/0.774
-    private int MAX_MONOMERS = 100;
+    private int MIN_MONOMERS = 5;
+    private int MAX_MONOMERS = 200;
     private GameObject VisualRg;
     private GameObject VisualRh;
     
@@ -189,6 +191,92 @@ public class HoloPolymers : MonoBehaviour
 
 
     //
+    // ScalePolyLen() - Adds or removes monomers from the system when the bounding box object scales
+    //                  the BaseParticle object. This will change polyLen. We leave scaleFactor as is.
+    //
+    public void ScalePolyLen()
+    {
+        GameObject baseParticle = GameObject.Find("BaseParticle");
+
+        // Calculate the number of monomers based on the size of the bounding box. If localScale = 1,
+        // then the box is at the initial size, so we should recover initialPolyLen;
+        int newPolyLen = Mathf.RoundToInt(initialPolyLen * baseParticle.transform.localScale.x/0.5f);
+
+        // Safety checks!
+        if (newPolyLen > MAX_MONOMERS)
+        {
+            newPolyLen = MAX_MONOMERS;
+        } 
+
+        if (newPolyLen < MIN_MONOMERS)
+        {
+            newPolyLen = MIN_MONOMERS;
+        }
+
+
+        // Either remove or add monomers to the system.
+        if (newPolyLen < polyLen)
+        {
+            // Remove:
+            for (int i = polyLen-1; i > newPolyLen-1; i--)
+            {
+                // Remove the monomer from the simulation.
+                Destroy(simulationParticles[i]);
+
+                // Remove the bond vector from the simulation.
+                Destroy(bondVectors[i - 1]);
+            }
+        }
+        else
+        {
+            for (int i = polyLen; i < newPolyLen; i++)
+            {
+
+                // Add:
+                Vector3 initialPosition = new Vector3(Random.Range(-1, 1), Random.Range(-1, 1), Random.Range(-1, 1));
+                initialPosition = simulationParticles[i - 1].GetComponent<SimParticle>().realPosition + bondLength * initialPosition.normalized;
+
+
+                // Add the bead, set initial position.
+                simulationParticles[i] = Instantiate(monomerObject);
+                simulationParticles[i].GetComponent<SimParticle>().MoveBead(initialPosition, scaleFactor);
+
+                // Assign an id.
+                simulationParticles[i].GetComponent<SimParticle>().id = i;
+
+                // Species/particle type
+                simulationParticles[i].GetComponent<SimParticle>().species = 0;
+
+                // Periodic boundary condition
+                simulationParticles[i].GetComponent<SimParticle>().SetBoxSize(boxSize);
+
+                // Set dt
+                simulationParticles[i].GetComponent<SimParticle>().SetDt(dt);
+
+                // Set the initial velocity to be that of the previous monomer to keep things near
+                // equilibrium.
+                simulationParticles[i].GetComponent<SimParticle>().SetVelocity(simulationParticles[i - 1].GetComponent<SimParticle>().beadVelocity);
+
+                // Make small!
+                simulationParticles[i].transform.localScale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+
+                // Add the bond vectors
+                UnityEngine.Vector3 offset = simulationParticles[i].transform.localPosition - simulationParticles[i-1].transform.localPosition;
+                UnityEngine.Vector3 scale = new Vector3(scaleFactor * 0.1f, offset.magnitude / 2.0f, scaleFactor * 0.1f);
+                UnityEngine.Vector3 position = simulationParticles[i-1].transform.localPosition + (offset / 2.0f);
+                bondVectors[i-1] = Instantiate(bondVector, position, Quaternion.identity);
+                bondVectors[i-1].transform.up = offset;
+                bondVectors[i-1].transform.localScale = scale;
+            }
+        }
+
+        polyLen = newPolyLen;
+    }
+
+
+
+    
+    //
     // Start() - This method is called first, and sets up the simulation. Notice thaat the lengthscales here are
     //           rescaled by scaleFactor when the particles need to be displayed to the user. Thus,they're really
     //           tied to the size of the BoundingBox around the object "BaseParticle", which is the only object
@@ -196,6 +284,8 @@ public class HoloPolymers : MonoBehaviour
     //
     void Start()
     {
+        // Initial chain length
+        polyLen = initialPolyLen;
 
         // Scale factor?
         scaleFactor = 2.0f * GameObject.Find("BaseParticle").transform.localScale.x / boxSize;
@@ -208,7 +298,7 @@ public class HoloPolymers : MonoBehaviour
         // up to MAX_MONOMERS monomers. The number of monomers can be changed on the fly
         // by the user by rescaling the BoundingBox around "BaseParticle".
         simulationParticles = new GameObject[MAX_MONOMERS];
-        bondVectors = new GameObject[polyLen - 1];
+        bondVectors = new GameObject[MAX_MONOMERS-1];
 
         // Set up the polymer chain, by either anchoring the first monomer to the position of
         // the BaseParticle, or by randomly placing a monomer near the previous monomer in the
@@ -510,7 +600,7 @@ public class HoloPolymers : MonoBehaviour
 
         avgBondLength /= (polyLen - 1);
         avgBondLength *= scaleFactor;
-        Debug.Log("Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
+        Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
     }
 
 
@@ -541,8 +631,7 @@ public class HoloPolymers : MonoBehaviour
 
         avgBondLength /= (polyLen - 1);
         avgBondLength *= scaleFactor;
-        Debug.Log("Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
-
+        Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
     }
 
 
