@@ -3,13 +3,6 @@ ScriptsOnlyBuild:
     Assembly-CSharp.dll:
     - HoloPolymers
     - SimParticle
-    Microsoft.MixedReality.Toolkit.Editor.Inspectors.dll:
-    - Microsoft.MixedReality.Toolkit.Diagnostics.Editor.MixedRealityDiagnosticsSystemProfileInspector
-    - Microsoft.MixedReality.Toolkit.Editor.MixedRealityCameraProfileInspector
-    - Microsoft.MixedReality.Toolkit.Editor.MixedRealityToolkitConfigurationProfileInspector
-    - Microsoft.MixedReality.Toolkit.Input.Editor.MixedRealityInputSystemProfileInspector
-    - Microsoft.MixedReality.Toolkit.Input.Editor.MixedRealityPointerProfileInspector
-    - Microsoft.MixedReality.Toolkit.Inspectors.MixedRealityEyeTrackingProfileInspector
     Microsoft.MixedReality.Toolkit.Editor.Utilities.dll:
     - Microsoft.MixedReality.Toolkit.Utilities.Editor.ProjectPreferences
     Microsoft.MixedReality.Toolkit.Examples.dll:
@@ -553,7 +546,7 @@ ScriptsOnlyBuild:
     className: HitBehaviorDestroyOnSelect
   - hash:
       serializedVersion: 2
-      Hash: 1bf3eedd2453821aa5b7d3c579d6c9c2
+      Hash: 4eba3d2759e6b8a4b7c89ff761ad7413
     assemblyName: Assembly-CSharp.dll
     namespaceName: 
     className: HoloPolymers

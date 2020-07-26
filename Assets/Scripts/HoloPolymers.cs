@@ -29,6 +29,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using Microsoft.MixedReality.Toolkit.UI;
 using UnityEngine;
 
 public class HoloPolymers : MonoBehaviour
@@ -42,6 +43,7 @@ public class HoloPolymers : MonoBehaviour
     public bool showRhSphere = true;
     public bool fixedBondAngles = false;
     public bool equilibrate = true;
+    public bool allowBondCrossing = false;
 
     // Prefabs
     public GameObject monomerObject;
@@ -53,8 +55,10 @@ public class HoloPolymers : MonoBehaviour
     public float bondLength = 1.5f;
     public float Rc = 2.0f;
     public float Rm = 1.0f;
+    public float RSRP = 0.9f;
     public float bondStrength = 100.0f;
     public float bendStrength = 50.0f;
+    public float SRPStrength = 120.0f;
     public float U_MAX = 200.0f;
     public float U_MIN = -5.0f;
 
@@ -101,14 +105,19 @@ public class HoloPolymers : MonoBehaviour
     //                  this code (hard coded below). 
     public void ToggleAngles()
     {
+        // This can be changed if necessary, but I also toggle between allowing bond crossing
+        // here too... because the context menu is out of buttons! 
         if (fixedBondAngles)
         {
-            fixedBondAngles = false;
+            fixedBondAngles   = false;
+            allowBondCrossing = true;
         }
         else
         {
-            fixedBondAngles = true;
+            fixedBondAngles   = true;
+            allowBondCrossing = false;
         }
+      
     }
 
 
@@ -600,6 +609,12 @@ public class HoloPolymers : MonoBehaviour
 
         avgBondLength /= (polyLen - 1);
         avgBondLength *= scaleFactor;
+
+        if (allowBondCrossing == false)
+        {
+            SRP_Forces();
+        }
+
         Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
     }
 
@@ -629,9 +644,51 @@ public class HoloPolymers : MonoBehaviour
             avgBondLength += bondVector.magnitude;
         }
 
+        if (allowBondCrossing == false)
+        {
+            SRP_Forces();
+        }
+
         avgBondLength /= (polyLen - 1);
         avgBondLength *= scaleFactor;
-        Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
+        //Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
+        //toolTipLabel.GetComponent<TextMeshPro_Text>();// = "Deg. of Polymerization: " + polyLen + "\nAvg. Bond Length: " + avgBondLength / 100.0f + " cm\n" + "Avg. Radius of Gyration: " + RadiusOfGyration() / 100.0f + " cm";
+    }
+
+
+    //
+    // SRP_Forces() - Calculate a segmental repulsive force between bonded pairs to ensure that 
+    // bond crossing/topological violations are minimized.
+    //
+    // Details can be found in Sirk et al., J. Chem. Phys. 136, 134903 (2012).
+    //
+    void SRP_Forces()
+    {
+        for (int i = 0; i < polyLen - 1; i++)
+        {
+            // This will process each bond with each other bond.
+            for (int j = i + 2; j < polyLen - 1; j++)
+            {
+                Vector3 Pk = 0.5f * (simulationParticles[i + 1].GetComponent<SimParticle>().realPosition - simulationParticles[i].GetComponent<SimParticle>().realPosition);
+                Vector3 Pl = 0.5f * (simulationParticles[j + 1].GetComponent<SimParticle>().realPosition - simulationParticles[j].GetComponent<SimParticle>().realPosition);
+
+                Vector3 dkl = Pk - Pl;
+
+                if (dkl.magnitude < RSRP)
+                {
+                    Vector3 F_SRP = SRPStrength * (1.0f - dkl.magnitude / RSRP) * dkl.normalized;
+
+                    // Add force on both particles. The factor of 0.5f comes from the Lever Rule applied to a 
+                    // midpoint between the two monomers.
+                    simulationParticles[i].GetComponent<SimParticle>().AddForce(0.5f * F_SRP);
+                    simulationParticles[i + 1].GetComponent<SimParticle>().AddForce(0.5f * F_SRP);
+
+                    // Newton's 3rd! Equal + opposite.
+                    simulationParticles[j].GetComponent<SimParticle>().AddForce(-0.5f * F_SRP);
+                    simulationParticles[j + 1].GetComponent<SimParticle>().AddForce(-0.5f * F_SRP);
+                }
+            }
+        }
     }
 
 
