@@ -26,9 +26,12 @@
  * limitations under the License.
  *
  */
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Microsoft.MixedReality.Toolkit.UI;
 using UnityEngine;
 
@@ -71,13 +74,18 @@ public class HoloPolymers : MonoBehaviour
     // Private globals
     private GameObject[] simulationParticles;
     private GameObject[] bondVectors;
-    private float scaleFactor;
-    private float avgBondLength;
-    private float avgBondAngle;
-    private int   polyLen;
-    private float RhConversion = 1.2919896f; // = 1.0/0.774
-    private int MIN_MONOMERS = 5;
-    private int MAX_MONOMERS = 200;
+    private Vector3[] dkl_prev;
+    private float[] cos_phi;
+    private float   scaleFactor;
+    private float   avgBondLength;
+    private float   avgBondAngle;
+    private int     polyLen;
+    private float   RhConversion = 1.2919896f; // = 1.0/0.774
+    private int     TVs;
+    private int     MIN_MONOMERS = 5;
+    private int     MAX_MONOMERS = 200;
+    private bool    first_timestep_complete = false;
+    private int     t;
     private GameObject VisualRg;
     private GameObject VisualRh;
     
@@ -91,10 +99,76 @@ public class HoloPolymers : MonoBehaviour
     //
     public void ResetSim()
     {
+
+        // Resize the base particle/cube to the original size.
+        GameObject.Find("BaseParticle").transform.localScale = new Vector3(0.5f, 0.5f, 0.5f);
+
+        // This is for tracking topology violations (TVs):
+        TVs = 0;
+        t = 0;
+
+        // Destroy whatever's already in the simulation space.
         for (int i=0; i<polyLen; i++)
         {
-            simulationParticles[i].GetComponent<SimParticle>().Reset(scaleFactor);
+            Destroy(simulationParticles[i]);
         }
+
+        for (int i=0; i<polyLen-1; i++)
+        {
+            Destroy(bondVectors[i]);
+        }
+        polyLen = initialPolyLen;
+
+
+        // Reset the monomers:
+        for (int i = 0; i < polyLen; i++)
+        {
+            Vector3 initialPosition;
+            if (i == 0)
+            {
+                initialPosition = GameObject.Find("BaseParticle").transform.position;
+            }
+            else
+            {
+                initialPosition = UnityEngine.Random.insideUnitSphere;
+                initialPosition = simulationParticles[i - 1].GetComponent<SimParticle>().realPosition + bondLength * initialPosition.normalized;
+            }
+
+            // Create a monomer.
+            simulationParticles[i] = Instantiate(monomerObject);
+
+            // Add the bead, set initial position.
+            simulationParticles[i].GetComponent<SimParticle>().MoveBead(initialPosition, scaleFactor);
+
+            // Assign an id.
+            simulationParticles[i].GetComponent<SimParticle>().id = i;
+
+            // Species/particle type
+            simulationParticles[i].GetComponent<SimParticle>().species = 0;
+
+            // Periodic boundary condition
+            simulationParticles[i].GetComponent<SimParticle>().SetBoxSize(boxSize);
+
+            // Set dt
+            simulationParticles[i].GetComponent<SimParticle>().SetDt(dt);
+
+            // Get a random velocity for the particle.
+            Vector3 initVelocityVector = new Vector3(UnityEngine.Random.Range(-1, 1), UnityEngine.Random.Range(-1, 1), UnityEngine.Random.Range(-1, 1));
+            simulationParticles[i].GetComponent<SimParticle>().SetVelocity(initVel * initVelocityVector.normalized);
+
+            // Make small!
+            simulationParticles[i].transform.localScale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+        }
+
+        // Move the center-of-mass to <0, 0, 0> to center the chain in the BoundingBox.
+        CenterOfMass();
+
+        if (showBondVectors) DrawBonds();
+
+        // Calculate initial forces.
+        FENEBonds();
+        if (fixedBondAngles) BondAngles();
+        Interparticle_Forces();
     }
 
 
@@ -105,17 +179,13 @@ public class HoloPolymers : MonoBehaviour
     //                  this code (hard coded below). 
     public void ToggleAngles()
     {
-        // This can be changed if necessary, but I also toggle between allowing bond crossing
-        // here too... because the context menu is out of buttons! 
         if (fixedBondAngles)
         {
             fixedBondAngles   = false;
-            allowBondCrossing = true;
         }
         else
         {
             fixedBondAngles   = true;
-            allowBondCrossing = false;
         }
       
     }
@@ -242,7 +312,7 @@ public class HoloPolymers : MonoBehaviour
             {
 
                 // Add:
-                Vector3 initialPosition = new Vector3(Random.Range(-1, 1), Random.Range(-1, 1), Random.Range(-1, 1));
+                Vector3 initialPosition = new Vector3(UnityEngine.Random.Range(-1, 1), UnityEngine.Random.Range(-1, 1), UnityEngine.Random.Range(-1, 1));
                 initialPosition = simulationParticles[i - 1].GetComponent<SimParticle>().realPosition + bondLength * initialPosition.normalized;
 
 
@@ -309,6 +379,17 @@ public class HoloPolymers : MonoBehaviour
         simulationParticles = new GameObject[MAX_MONOMERS];
         bondVectors = new GameObject[MAX_MONOMERS-1];
 
+        // This is for tracking topology violations (TVs):
+        dkl_prev = new Vector3[MAX_MONOMERS * MAX_MONOMERS];
+        cos_phi = new float[MAX_MONOMERS * MAX_MONOMERS];
+        TVs = 0;
+        t = 0; 
+        for (int i=0; i<MAX_MONOMERS*MAX_MONOMERS; i++)
+        {
+            dkl_prev[i] = new Vector3(0.0f, 0.0f, 0.0f);
+            cos_phi[i] = 0.0f;
+        }
+
         // Set up the polymer chain, by either anchoring the first monomer to the position of
         // the BaseParticle, or by randomly placing a monomer near the previous monomer in the
         // chain.
@@ -321,7 +402,7 @@ public class HoloPolymers : MonoBehaviour
             }
             else
             {
-                initialPosition = new Vector3(Random.Range(-1, 1), Random.Range(-1, 1), Random.Range(-1, 1));
+                initialPosition = UnityEngine.Random.insideUnitSphere;
                 initialPosition = simulationParticles[i - 1].GetComponent<SimParticle>().realPosition + bondLength * initialPosition.normalized;
             }
 
@@ -342,7 +423,7 @@ public class HoloPolymers : MonoBehaviour
             simulationParticles[i].GetComponent<SimParticle>().SetDt(dt);
 
             // Get a random velocity for the particle.
-            Vector3 initVelocityVector = new Vector3(Random.Range(-1, 1), Random.Range(-1, 1), Random.Range(-1, 1));
+            Vector3 initVelocityVector = new Vector3(UnityEngine.Random.Range(-1, 1), UnityEngine.Random.Range(-1, 1), UnityEngine.Random.Range(-1, 1));
             simulationParticles[i].GetComponent<SimParticle>().SetVelocity(initVel * initVelocityVector.normalized);
 
             // Make small!
@@ -391,6 +472,7 @@ public class HoloPolymers : MonoBehaviour
             simulationParticles[i].GetComponent<SimParticle>().MoveBead(scaleFactor);
             simulationParticles[i].GetComponent<SimParticle>().PredictVelocity();
             simulationParticles[i].GetComponent<SimParticle>().Langevin(sigma, gamma);
+            ++t;
         }
 
         // Keep the polymer centered in the scene.
@@ -429,6 +511,14 @@ public class HoloPolymers : MonoBehaviour
         for (int i = 0; i < polyLen; i++)
         {
             simulationParticles[i].GetComponent<SimParticle>().CorrectVelocity();
+        }
+
+        // Reset TVs to handle the weird initial values that happen from the
+        // first timestep being randomly initialized.
+        if (!first_timestep_complete)
+        {
+            TVs = 0;
+            first_timestep_complete = true;
         }
 
     }
@@ -610,12 +700,12 @@ public class HoloPolymers : MonoBehaviour
         avgBondLength /= (polyLen - 1);
         avgBondLength *= scaleFactor;
 
-        if (allowBondCrossing == false)
-        {
-            SRP_Forces();
-        }
+        // Segmental repulsion to prevent bond crossing.
+        SRP_Forces();
 
-        Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
+
+        UnityEngine.Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration() + "     Topology Violations: " + TVs + "("+t+")");
+
     }
 
 
@@ -644,15 +734,13 @@ public class HoloPolymers : MonoBehaviour
             avgBondLength += bondVector.magnitude;
         }
 
-        if (allowBondCrossing == false)
-        {
-            SRP_Forces();
-        }
+        // Segmental repulsion to prevent bond crossing.
+        SRP_Forces();
+
 
         avgBondLength /= (polyLen - 1);
         avgBondLength *= scaleFactor;
-        //Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration());
-        //toolTipLabel.GetComponent<TextMeshPro_Text>();// = "Deg. of Polymerization: " + polyLen + "\nAvg. Bond Length: " + avgBondLength / 100.0f + " cm\n" + "Avg. Radius of Gyration: " + RadiusOfGyration() / 100.0f + " cm";
+        UnityEngine.Debug.Log("Monomers:" + polyLen + "     Bond: " + avgBondLength + "     Angle: " + avgBondAngle + "    Rg: " + RadiusOfGyration() + "     Topology Violations: " + TVs + "(" + t + ")");
     }
 
 
@@ -669,26 +757,43 @@ public class HoloPolymers : MonoBehaviour
             // This will process each bond with each other bond.
             for (int j = i + 2; j < polyLen - 1; j++)
             {
-                Vector3 Pk = 0.5f * (simulationParticles[i + 1].GetComponent<SimParticle>().realPosition - simulationParticles[i].GetComponent<SimParticle>().realPosition);
-                Vector3 Pl = 0.5f * (simulationParticles[j + 1].GetComponent<SimParticle>().realPosition - simulationParticles[j].GetComponent<SimParticle>().realPosition);
+                // Get mid-point of every bond as a vector from the origin.
+                Vector3 Pk = 0.5f * (simulationParticles[i + 1].GetComponent<SimParticle>().realPosition + simulationParticles[i].GetComponent<SimParticle>().realPosition);
+                Vector3 Pl = 0.5f * (simulationParticles[j + 1].GetComponent<SimParticle>().realPosition + simulationParticles[j].GetComponent<SimParticle>().realPosition);
 
+                // Mid-point to mid-point distance:
                 Vector3 dkl = Pk - Pl;
 
-                if (dkl.magnitude < RSRP)
+                // Check for topology violations/bond crossing.
+                int idx = i * (polyLen - 1) + j;
+                float my_cos = Vector3.Dot(dkl.normalized, dkl_prev[idx].normalized);
+                if (Mathf.Sign(my_cos) != Mathf.Sign(cos_phi[idx]))
                 {
-                    Vector3 F_SRP = SRPStrength * (1.0f - dkl.magnitude / RSRP) * dkl.normalized;
+                    ++TVs;
+                }
+                cos_phi[idx]  = my_cos;
+                dkl_prev[idx] = dkl;
 
-                    // Add force on both particles. The factor of 0.5f comes from the Lever Rule applied to a 
-                    // midpoint between the two monomers.
-                    simulationParticles[i].GetComponent<SimParticle>().AddForce(0.5f * F_SRP);
-                    simulationParticles[i + 1].GetComponent<SimParticle>().AddForce(0.5f * F_SRP);
+                if (allowBondCrossing == false)
+                {
+                    if (dkl.magnitude < RSRP)
+                    {
+                        Vector3 F_SRP = SRPStrength * (1.0f - dkl.magnitude / RSRP) * dkl.normalized;
 
-                    // Newton's 3rd! Equal + opposite.
-                    simulationParticles[j].GetComponent<SimParticle>().AddForce(-0.5f * F_SRP);
-                    simulationParticles[j + 1].GetComponent<SimParticle>().AddForce(-0.5f * F_SRP);
+                        // Add force on both particles. The factor of 0.5f comes from the Lever Rule applied to a 
+                        // midpoint between the two monomers.
+                        simulationParticles[i].GetComponent<SimParticle>().AddForce(0.5f * F_SRP);
+                        simulationParticles[i + 1].GetComponent<SimParticle>().AddForce(0.5f * F_SRP);
+
+                        // Newton's 3rd! Equal + opposite.
+                        simulationParticles[j].GetComponent<SimParticle>().AddForce(-0.5f * F_SRP);
+                        simulationParticles[j + 1].GetComponent<SimParticle>().AddForce(-0.5f * F_SRP);
+                    }
                 }
             }
         }
+
+        //UnityEngine.Debug.Log("Topology violations: " + TVs);
     }
 
 
